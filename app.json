@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "Torvus",
+    "slug": "torvus",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "torvus",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0E0D0B"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.torvus.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Torvus uses your camera to estimate food nutrition from photos.",
+        "NSPhotoLibraryUsageDescription": "Torvus accesses your photo library so you can upload food photos for nutrition estimation."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0E0D0B"
+      },
+      "package": "com.torvus.app",
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Torvus uses your camera to estimate food nutrition from photos."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Torvus accesses your photos to estimate food nutrition."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
