@@ -15,7 +15,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as WebBrowser from 'expo-web-browser';
 import { getDatabase } from '../../schema';
-import { supabase, SUPABASE_URL } from '../../src/lib/supabase';
+import { supabase, SUPABASE_URL, SUPABASE_ANON } from '../../src/lib/supabase';
 
 // ─────────────────────────────────────────────────────────────
 // TYPES
@@ -61,6 +61,7 @@ async function callEdgeFunction(
     method: 'POST',
     headers: {
       'Authorization':  `Bearer ${session.access_token}`,
+      'apikey':         SUPABASE_ANON,
       'Content-Type':   'application/json',
     },
     body: JSON.stringify({ base64, mediaType, bias, notes }),
@@ -242,6 +243,7 @@ export default function AIEstimateScreen() {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${session.access_token}`,
+          'apikey':        SUPABASE_ANON,
           'Content-Type':  'application/json',
         },
         body: JSON.stringify({ code: promoCode.trim() }),
@@ -290,6 +292,7 @@ export default function AIEstimateScreen() {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${session.access_token}`,
+          'apikey':        SUPABASE_ANON,
           'Content-Type':  'application/json',
         },
         body: JSON.stringify({ priceType }),
@@ -300,7 +303,7 @@ export default function AIEstimateScreen() {
           await refreshPremiumStatus();
           return;
         }
-        Alert.alert('Error', 'Could not start checkout. Please try again.');
+        Alert.alert('Error', `Could not start checkout. Code: ${body?.error ?? res.status}${body?.detail ? `\n${body.detail}` : ''}`);
         return;
       }
       await WebBrowser.openBrowserAsync(body.url);

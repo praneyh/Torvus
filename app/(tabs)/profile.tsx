@@ -12,7 +12,7 @@ import {
 import { useFocusEffect, router } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import { getDatabase } from '../../schema';
-import { supabase, SUPABASE_URL } from '../../src/lib/supabase';
+import { supabase, SUPABASE_URL, SUPABASE_ANON } from '../../src/lib/supabase';
 import { pushAllData } from '../../src/lib/sync';
 
 // ─────────────────────────────────────────────────────────────
@@ -226,6 +226,7 @@ export default function ProfileScreen() {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${session.access_token}`,
+          'apikey':        SUPABASE_ANON,
           'Content-Type':  'application/json',
         },
         body: JSON.stringify({}),

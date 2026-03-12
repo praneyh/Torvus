@@ -15,7 +15,7 @@ import {
 import { router } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import { getDatabase } from '../../schema';
-import { supabase, SUPABASE_URL } from '../../src/lib/supabase';
+import { supabase, SUPABASE_URL, SUPABASE_ANON } from '../../src/lib/supabase';
 
 // ─────────────────────────────────────────────────────────────
 // TYPES
@@ -82,7 +82,7 @@ export default function WeeklyInsightsScreen() {
       if (!session?.access_token) { Alert.alert('Sign in required', 'Please sign in to subscribe.'); return; }
       const res = await fetch(`${SUPABASE_URL}/functions/v1/create-checkout-session`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        headers: { 'Authorization': `Bearer ${session.access_token}`, 'apikey': SUPABASE_ANON, 'Content-Type': 'application/json' },
         body: JSON.stringify({ priceType }),
       });
       const body = await res.json();
@@ -214,6 +214,7 @@ export default function WeeklyInsightsScreen() {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${session.access_token}`,
+          'apikey':        SUPABASE_ANON,
           'Content-Type':  'application/json',
         },
         body: JSON.stringify({

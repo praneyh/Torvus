@@ -94,8 +94,11 @@ Deno.serve(async (req: Request) => {
 
     if (!stripeRes.ok) {
       const stripeErr = await stripeRes.json();
-      console.error('Stripe error:', stripeErr);
-      return err(502, 'payment_provider_error');
+      console.error('Stripe error:', JSON.stringify(stripeErr));
+      return new Response(JSON.stringify({ error: 'payment_provider_error', detail: stripeErr?.error?.message ?? stripeErr }), {
+        status: 502,
+        headers: { ...CORS, 'Content-Type': 'application/json' },
+      });
     }
 
     const session = await stripeRes.json();
