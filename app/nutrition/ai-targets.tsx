@@ -14,6 +14,7 @@ import {
   Alert, KeyboardAvoidingView,
 } from 'react-native';
 import { router } from 'expo-router';
+import * as WebBrowser from 'expo-web-browser';
 import { getDatabase } from '../../schema';
 import { supabase, SUPABASE_URL } from '../../src/lib/supabase';
 
@@ -59,6 +60,8 @@ export default function AITargetsScreen() {
   const [step, setStep]             = useState<Step>('loading');
   const [result, setResult]         = useState<TargetsResult | null>(null);
   const [calcCount, setCalcCount]   = useState(0);
+  const [isCheckoutLoading, setIsCheckoutLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing]           = useState(false);
 
   // Form fields
   const [weightKg, setWeightKg]         = useState('');
@@ -119,6 +122,43 @@ export default function AITargetsScreen() {
       }
     })();
   }, []);
+
+  async function openStripeCheckout(priceType: 'monthly' | 'annual') {
+    setIsCheckoutLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) { Alert.alert('Sign in required', 'Please sign in to subscribe.'); return; }
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/create-checkout-session`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priceType }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        if (body?.error === 'already_premium') { await refreshPremiumStatus(); return; }
+        Alert.alert('Error', 'Could not start checkout. Please try again.');
+        return;
+      }
+      await WebBrowser.openBrowserAsync(body.url);
+    } catch { Alert.alert('Network error', 'Please check your connection.'); }
+    finally { setIsCheckoutLoading(false); }
+  }
+
+  async function refreshPremiumStatus() {
+    setIsRefreshing(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user?.id) return;
+      const { data: profile } = await supabase
+        .from('profiles').select('is_premium').eq('id', session.user.id).single();
+      if (profile?.is_premium) {
+        setStep('input');
+      } else {
+        Alert.alert('Not active yet', 'Your subscription is not active yet. If you just paid, wait a moment and try again.');
+      }
+    } catch { Alert.alert('Error', 'Could not check subscription status.'); }
+    finally { setIsRefreshing(false); }
+  }
 
   async function calculate() {
     if (calcCount >= 3) {
@@ -229,16 +269,50 @@ export default function AITargetsScreen() {
 
         {/* PAYWALL */}
         {step === 'paywall' && (
-          <View style={styles.centerWrap}>
+          <ScrollView contentContainerStyle={styles.centerWrap} showsVerticalScrollIndicator={false}>
             <Text style={styles.lockIcon}>🔒</Text>
-            <Text style={styles.paywallTitle}>Premium Feature</Text>
+            <Text style={styles.paywallTitle}>Torvus Premium</Text>
             <Text style={styles.paywallSub}>
               AI-calculated nutrition targets are available with Torvus Premium.
             </Text>
-            <TouchableOpacity style={styles.backBtnAlt} onPress={() => router.back()}>
-              <Text style={styles.backBtnAltText}>GO BACK</Text>
+            <View style={styles.paywallPriceCard}>
+              <Text style={styles.paywallPriceLabel}>TORVUS PREMIUM</Text>
+              <Text style={styles.paywallPrice}>$4.99<Text style={styles.paywallPricePer}> / month</Text></Text>
+              <Text style={styles.paywallPriceAlt}>or $39.99 / year — save 33%</Text>
+            </View>
+            <View style={styles.paywallCtaGroup}>
+              <TouchableOpacity
+                style={[styles.paywallCta, isCheckoutLoading && { opacity: 0.5 }]}
+                onPress={() => openStripeCheckout('monthly')}
+                disabled={isCheckoutLoading}
+              >
+                {isCheckoutLoading
+                  ? <ActivityIndicator color="#0E0D0B" size="small" />
+                  : <Text style={styles.paywallCtaText}>SUBSCRIBE · $4.99/MONTH</Text>
+                }
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.paywallCtaAnnual, isCheckoutLoading && { opacity: 0.5 }]}
+                onPress={() => openStripeCheckout('annual')}
+                disabled={isCheckoutLoading}
+              >
+                <Text style={styles.paywallCtaAnnualText}>$39.99/YEAR  —  SAVE 33%</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={[styles.paywallRefresh, isRefreshing && { opacity: 0.5 }]}
+              onPress={refreshPremiumStatus}
+              disabled={isRefreshing}
+            >
+              {isRefreshing
+                ? <ActivityIndicator color="#555" size="small" />
+                : <Text style={styles.paywallRefreshText}>Already subscribed? Refresh status</Text>
+              }
             </TouchableOpacity>
-          </View>
+            <TouchableOpacity style={styles.paywallBack} onPress={() => router.back()}>
+              <Text style={styles.paywallBackText}>Go back</Text>
+            </TouchableOpacity>
+          </ScrollView>
         )}
 
         {/* INPUT FORM */}
@@ -481,7 +555,7 @@ const styles = StyleSheet.create({
 
   centerWrap: {
     flex: 1, alignItems: 'center', justifyContent: 'center',
-    paddingHorizontal: 28,
+    paddingHorizontal: 28, paddingVertical: 40,
   },
   lockIcon: { fontSize: 40, marginBottom: 16 },
   paywallTitle: { fontSize: 20, fontWeight: '900', color: '#F2F0EB', marginBottom: 10, textAlign: 'center' },
@@ -491,6 +565,29 @@ const styles = StyleSheet.create({
     paddingVertical: 14, paddingHorizontal: 32,
   },
   backBtnAltText: { fontSize: 12, fontWeight: '700', letterSpacing: 1, color: '#555' },
+  paywallPriceCard: {
+    width: '100%', backgroundColor: '#141311', borderWidth: 1, borderColor: '#252320',
+    borderRadius: 14, padding: 16, alignItems: 'center', marginBottom: 20,
+  },
+  paywallPriceLabel: { fontSize: 9, fontWeight: '700', letterSpacing: 2, color: '#555', marginBottom: 6 },
+  paywallPrice: { fontSize: 32, fontWeight: '900', color: '#F2F0EB' },
+  paywallPricePer: { fontSize: 14, fontWeight: '400', color: '#555' },
+  paywallPriceAlt: { fontSize: 12, color: '#555', marginTop: 4 },
+  paywallCtaGroup: { width: '100%', gap: 8, marginBottom: 8 },
+  paywallCta: {
+    width: '100%', backgroundColor: '#EF6C3E', borderRadius: 14,
+    paddingVertical: 18, alignItems: 'center',
+  },
+  paywallCtaText: { fontSize: 14, fontWeight: '900', letterSpacing: 1.5, color: '#0E0D0B' },
+  paywallCtaAnnual: {
+    width: '100%', borderWidth: 1, borderColor: '#EF6C3E', borderRadius: 14,
+    paddingVertical: 14, alignItems: 'center',
+  },
+  paywallCtaAnnualText: { fontSize: 12, fontWeight: '800', letterSpacing: 1, color: '#EF6C3E' },
+  paywallRefresh: { paddingVertical: 10, alignItems: 'center' },
+  paywallRefreshText: { fontSize: 12, color: '#555', textDecorationLine: 'underline' },
+  paywallBack: { paddingVertical: 8 },
+  paywallBackText: { fontSize: 12, color: '#444' },
 
   // Form
   formWrap: { padding: 20 },

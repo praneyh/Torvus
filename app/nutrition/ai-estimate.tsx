@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import * as WebBrowser from 'expo-web-browser';
 import { getDatabase } from '../../schema';
 import { supabase, SUPABASE_URL } from '../../src/lib/supabase';
 
@@ -90,6 +91,9 @@ export default function AIEstimateScreen() {
   const [result, setResult]     = useState<EstimateResult | null>(null);
   const [isLogging, setIsLogging] = useState(false);
   const [scansUsed, setScansUsed] = useState<number | null>(null);
+
+  const [isCheckoutLoading, setIsCheckoutLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing]           = useState(false);
 
   // Promo code redemption
   const [promoCode, setPromoCode]       = useState('');
@@ -272,6 +276,72 @@ export default function AIEstimateScreen() {
     }
   }
 
+  // ── Stripe checkout ──────────────────────────────────────
+
+  async function openStripeCheckout(priceType: 'monthly' | 'annual') {
+    setIsCheckoutLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        Alert.alert('Sign in required', 'Please sign in to subscribe.');
+        return;
+      }
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/create-checkout-session`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type':  'application/json',
+        },
+        body: JSON.stringify({ priceType }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        if (body?.error === 'already_premium') {
+          await refreshPremiumStatus();
+          return;
+        }
+        Alert.alert('Error', 'Could not start checkout. Please try again.');
+        return;
+      }
+      await WebBrowser.openBrowserAsync(body.url);
+    } catch {
+      Alert.alert('Network error', 'Please check your connection and try again.');
+    } finally {
+      setIsCheckoutLoading(false);
+    }
+  }
+
+  async function refreshPremiumStatus() {
+    setIsRefreshing(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user?.id) return;
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('is_premium')
+        .eq('id', session.user.id)
+        .single();
+      if (profile?.is_premium) {
+        const today = new Date().toISOString().slice(0, 10);
+        const { data: usage } = await supabase
+          .from('ai_usage')
+          .select('request_count')
+          .eq('user_id', session.user.id)
+          .eq('date', today)
+          .eq('feature', 'food_scan')
+          .single();
+        setScansUsed(usage?.request_count ?? 0);
+        setStep('pick');
+      } else {
+        Alert.alert('Not active yet', 'Your subscription is not active yet. If you just paid, please wait a moment and try again.');
+      }
+    } catch {
+      Alert.alert('Error', 'Could not check subscription status.');
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
   // ── Log ─────────────────────────────────────────────────
 
   async function logFood() {
@@ -369,11 +439,35 @@ export default function AIEstimateScreen() {
               <Text style={styles.paywallPriceAlt}>or $39.99 / year — save 33%</Text>
             </View>
 
+            <View style={styles.paywallCtaGroup}>
+              <TouchableOpacity
+                style={[styles.paywallCta, isCheckoutLoading && { opacity: 0.5 }]}
+                onPress={() => openStripeCheckout('monthly')}
+                disabled={isCheckoutLoading}
+              >
+                {isCheckoutLoading
+                  ? <ActivityIndicator color="#0E0D0B" size="small" />
+                  : <Text style={styles.paywallCtaText}>SUBSCRIBE · $4.99/MONTH</Text>
+                }
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.paywallCtaAnnual, isCheckoutLoading && { opacity: 0.5 }]}
+                onPress={() => openStripeCheckout('annual')}
+                disabled={isCheckoutLoading}
+              >
+                <Text style={styles.paywallCtaAnnualText}>$39.99/YEAR  —  SAVE 33%</Text>
+              </TouchableOpacity>
+            </View>
+
             <TouchableOpacity
-              style={styles.paywallCta}
-              onPress={() => Alert.alert('Coming Soon', 'In-app purchase subscriptions will be available in the next update.')}
+              style={[styles.paywallRefresh, isRefreshing && { opacity: 0.5 }]}
+              onPress={refreshPremiumStatus}
+              disabled={isRefreshing}
             >
-              <Text style={styles.paywallCtaText}>GET PREMIUM</Text>
+              {isRefreshing
+                ? <ActivityIndicator color="#555" size="small" />
+                : <Text style={styles.paywallRefreshText}>Already subscribed? Refresh status</Text>
+              }
             </TouchableOpacity>
 
             {/* Promo / test code */}
@@ -710,11 +804,19 @@ const styles = StyleSheet.create({
   paywallPrice: { fontSize: 36, fontWeight: '900', color: '#F2F0EB' },
   paywallPricePer: { fontSize: 16, fontWeight: '500', color: '#555' },
   paywallPriceAlt: { fontSize: 12, color: '#555', marginTop: 4 },
+  paywallCtaGroup: { width: '100%', gap: 8, marginBottom: 12 },
   paywallCta: {
     width: '100%', backgroundColor: '#EF6C3E', borderRadius: 14,
-    paddingVertical: 18, alignItems: 'center', marginBottom: 12,
+    paddingVertical: 18, alignItems: 'center',
   },
   paywallCtaText: { fontSize: 14, fontWeight: '900', letterSpacing: 1.5, color: '#0E0D0B' },
+  paywallCtaAnnual: {
+    width: '100%', borderWidth: 1, borderColor: '#EF6C3E', borderRadius: 14,
+    paddingVertical: 14, alignItems: 'center',
+  },
+  paywallCtaAnnualText: { fontSize: 12, fontWeight: '800', letterSpacing: 1, color: '#EF6C3E' },
+  paywallRefresh: { paddingVertical: 10, alignItems: 'center' },
+  paywallRefreshText: { fontSize: 12, color: '#555', textDecorationLine: 'underline' },
   paywallRestore: { paddingVertical: 8 },
   paywallRestoreText: { fontSize: 12, color: '#555' },
 

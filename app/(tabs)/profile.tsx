@@ -9,9 +9,10 @@ import {
   TouchableOpacity, TextInput, Platform, ActivityIndicator,
   KeyboardAvoidingView, Alert,
 } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, router } from 'expo-router';
+import * as WebBrowser from 'expo-web-browser';
 import { getDatabase } from '../../schema';
-import { supabase } from '../../src/lib/supabase';
+import { supabase, SUPABASE_URL } from '../../src/lib/supabase';
 import { pushAllData } from '../../src/lib/sync';
 
 // ─────────────────────────────────────────────────────────────
@@ -69,6 +70,9 @@ export default function ProfileScreen() {
   const [savedAt, setSavedAt]                 = useState<number | null>(null);
   const [userEmail, setUserEmail]             = useState<string | null>(null);
   const [isSyncing, setIsSyncing]             = useState(false);
+  const [isPremium, setIsPremium]           = useState(false);
+  const [isManaging, setIsManaging]         = useState(false);
+  const [isCheckingStatus, setIsCheckingStatus] = useState(false);
 
   function getHeightCmFromInputs(): number | null {
     if (heightUnit === 'cm') {
@@ -149,6 +153,17 @@ export default function ProfileScreen() {
         initHeightInputs(row.height_cm, hUnit);
         setApiKeyInput(loaded.anthropicApiKey);
       }
+
+      // Check premium status
+      const { data: { session: premSession } } = await supabase.auth.getSession();
+      if (premSession?.user?.id) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('is_premium')
+          .eq('id', premSession.user.id)
+          .single();
+        setIsPremium(!!profile?.is_premium);
+      }
     } catch (e) {
       console.error('profile load error:', e);
     } finally {
@@ -200,6 +215,50 @@ export default function ProfileScreen() {
       prefs.fitnessGoal, prefs.weightUnit, prefs.aiEstimationBias,
       bodyWeightInput, getHeightCmFromInputs(), apiKeyInput,
     );
+  }
+
+  async function openManageSubscription() {
+    setIsManaging(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) return;
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/customer-portal`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type':  'application/json',
+        },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        Alert.alert('Error', 'Could not open subscription management. Please try again.');
+        return;
+      }
+      await WebBrowser.openBrowserAsync(body.url);
+    } catch {
+      Alert.alert('Error', 'Network error. Please check your connection.');
+    } finally {
+      setIsManaging(false);
+    }
+  }
+
+  async function checkPremiumStatus() {
+    setIsCheckingStatus(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user?.id) return;
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('is_premium')
+        .eq('id', session.user.id)
+        .single();
+      setIsPremium(!!profile?.is_premium);
+    } catch {
+      Alert.alert('Error', 'Could not check subscription status.');
+    } finally {
+      setIsCheckingStatus(false);
+    }
   }
 
   async function syncNow() {
@@ -451,6 +510,58 @@ export default function ProfileScreen() {
               ))}
             </View>
 
+            {/* ── SUBSCRIPTION ── */}
+            <SectionLabel label="SUBSCRIPTION" />
+            <View style={styles.card}>
+              <View style={styles.subRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.fieldLabel}>STATUS</Text>
+                  <View style={styles.subBadgeRow}>
+                    <View style={[styles.subBadge, isPremium ? styles.subBadgePremium : styles.subBadgeFree]}>
+                      <Text style={[styles.subBadgeText, isPremium ? styles.subBadgeTextPremium : styles.subBadgeTextFree]}>
+                        {isPremium ? 'PREMIUM' : 'FREE'}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={[styles.subRefreshBtn, isCheckingStatus && { opacity: 0.5 }]}
+                  onPress={checkPremiumStatus}
+                  disabled={isCheckingStatus}
+                >
+                  {isCheckingStatus
+                    ? <ActivityIndicator color="#555" size="small" />
+                    : <Text style={styles.subRefreshBtnText}>REFRESH</Text>
+                  }
+                </TouchableOpacity>
+              </View>
+              {isPremium ? (
+                <>
+                  <View style={styles.cardDivider} />
+                  <TouchableOpacity
+                    style={[styles.subManageBtn, isManaging && { opacity: 0.5 }]}
+                    onPress={openManageSubscription}
+                    disabled={isManaging}
+                  >
+                    {isManaging
+                      ? <ActivityIndicator color="#EF6C3E" size="small" />
+                      : <Text style={styles.subManageBtnText}>MANAGE SUBSCRIPTION</Text>
+                    }
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  <View style={styles.cardDivider} />
+                  <TouchableOpacity
+                    style={styles.subUpgradeBtn}
+                    onPress={() => router.push('/nutrition/ai-estimate')}
+                  >
+                    <Text style={styles.subUpgradeBtnText}>GET PREMIUM →</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+            </View>
+
             {/* ── ACCOUNT ── */}
             <SectionLabel label="ACCOUNT" />
             <View style={styles.card}>
@@ -584,6 +695,22 @@ const styles = StyleSheet.create({
   apiKeyStatus: { fontSize: 11, paddingHorizontal: 16, paddingBottom: 12 },
   apiKeyStatusOk: { color: '#6CEF3E' },
   apiKeyStatusWarn: { color: '#EF9B3E' },
+
+  // ── Subscription ──
+  subRow: { flexDirection: 'row', alignItems: 'center', padding: 16 },
+  subBadgeRow: { flexDirection: 'row', marginTop: 4 },
+  subBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1 },
+  subBadgePremium: { backgroundColor: '#EF6C3E18', borderColor: '#EF6C3E' },
+  subBadgeFree: { backgroundColor: '#55555518', borderColor: '#555' },
+  subBadgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 1.5 },
+  subBadgeTextPremium: { color: '#EF6C3E' },
+  subBadgeTextFree: { color: '#555' },
+  subRefreshBtn: { borderWidth: 1, borderColor: '#252320', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 },
+  subRefreshBtnText: { fontSize: 9, fontWeight: '700', letterSpacing: 1, color: '#555' },
+  subManageBtn: { paddingHorizontal: 16, paddingVertical: 14, alignItems: 'center' },
+  subManageBtnText: { fontSize: 11, fontWeight: '700', letterSpacing: 1, color: '#EF6C3E' },
+  subUpgradeBtn: { paddingHorizontal: 16, paddingVertical: 14, alignItems: 'center' },
+  subUpgradeBtnText: { fontSize: 11, fontWeight: '700', letterSpacing: 1, color: '#EF6C3E' },
 
   // ── Account ──
   accountRow: { flexDirection: 'row', alignItems: 'center', padding: 16 },
