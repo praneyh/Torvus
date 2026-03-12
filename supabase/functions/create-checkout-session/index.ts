@@ -3,9 +3,9 @@
 // supabase/functions/create-checkout-session/index.ts
 //
 // Security:
-//   - Verifies Supabase JWT on every request
+//   - Supabase gateway verifies JWT before function runs
+//   - User ID extracted from verified JWT payload (no extra network hop)
 //   - Stripe secret key never exposed to client
-//   - User ID embedded in metadata for webhook verification
 //   - Re-uses existing Stripe customer to prevent duplicates
 // ============================================================
 
@@ -18,40 +18,53 @@ const CORS = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+/** Decode JWT payload without verifying signature (gateway already verified). */
+function jwtUserId(authHeader: string | null): string | null {
+  try {
+    if (!authHeader?.startsWith('Bearer ')) return null;
+    const token = authHeader.slice(7);
+    const [, b64] = token.split('.');
+    const padded = b64.replace(/-/g, '+').replace(/_/g, '/') + '==';
+    const payload = JSON.parse(atob(padded));
+    if (typeof payload?.sub !== 'string') return null;
+    if (payload.exp && payload.exp < Date.now() / 1000) return null;
+    return payload.sub as string;
+  } catch {
+    return null;
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
 
   try {
-    // ── 1. Verify JWT ──────────────────────────────────────
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader?.startsWith('Bearer ')) return err(401, 'unauthorized');
+    // ── 1. Verify JWT (decode payload; gateway verified signature) ──
+    const userId = jwtUserId(req.headers.get('Authorization'));
+    if (!userId) return err(401, 'unauthorized');
 
-    const token = authHeader.slice(7);
+    // ── 2. Supabase service client (DB only) ───────────────
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
-    if (authErr || !user) return err(401, 'unauthorized');
-
-    // ── 2. Check if already premium ───────────────────────
+    // ── 3. Check if already premium ───────────────────────
     const { data: profile } = await supabase
       .from('profiles')
       .select('is_premium, stripe_customer_id')
-      .eq('id', user.id)
+      .eq('id', userId)
       .single();
 
     if (profile?.is_premium) return err(409, 'already_premium');
 
-    // ── 3. Parse body ──────────────────────────────────────
+    // ── 4. Parse body ──────────────────────────────────────
     let body: Record<string, unknown>;
     try { body = await req.json(); }
     catch { return err(400, 'invalid_json'); }
 
     const priceType = body.priceType === 'annual' ? 'annual' : 'monthly';
 
-    // ── 4. Stripe config ───────────────────────────────────
+    // ── 5. Stripe config ───────────────────────────────────
     const stripeKey    = Deno.env.get('STRIPE_SECRET_KEY');
     const priceMonthly = Deno.env.get('STRIPE_PRICE_MONTHLY');
     const priceAnnual  = Deno.env.get('STRIPE_PRICE_ANNUAL');
@@ -62,27 +75,24 @@ Deno.serve(async (req: Request) => {
 
     const priceId = priceType === 'annual' ? priceAnnual : priceMonthly;
 
-    // ── 5. Build checkout params ───────────────────────────
+    // ── 6. Build checkout params ───────────────────────────
     const params = new URLSearchParams({
       'mode':                      'subscription',
       'line_items[0][price]':      priceId,
       'line_items[0][quantity]':   '1',
-      'client_reference_id':       user.id,
-      'metadata[user_id]':         user.id,
+      'client_reference_id':       userId,
+      'metadata[user_id]':         userId,
       'allow_promotion_codes':     'true',
       'success_url':               `${returnBase}?status=success`,
       'cancel_url':                `${returnBase}?status=cancel`,
     });
 
-    // Re-use existing Stripe customer if available
     const existingCustomerId = profile?.stripe_customer_id;
     if (existingCustomerId) {
       params.set('customer', existingCustomerId);
-    } else if (user.email) {
-      params.set('customer_email', user.email);
     }
 
-    // ── 6. Create Stripe session ───────────────────────────
+    // ── 7. Create Stripe session ───────────────────────────
     const stripeRes = await fetch(`${STRIPE_API}/checkout/sessions`, {
       method: 'POST',
       headers: {
@@ -95,7 +105,10 @@ Deno.serve(async (req: Request) => {
     if (!stripeRes.ok) {
       const stripeErr = await stripeRes.json();
       console.error('Stripe error:', JSON.stringify(stripeErr));
-      return new Response(JSON.stringify({ error: 'payment_provider_error', detail: stripeErr?.error?.message ?? stripeErr }), {
+      return new Response(JSON.stringify({
+        error:  'payment_provider_error',
+        detail: stripeErr?.error?.message ?? stripeErr,
+      }), {
         status: 502,
         headers: { ...CORS, 'Content-Type': 'application/json' },
       });

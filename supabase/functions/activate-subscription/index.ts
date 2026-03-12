@@ -2,11 +2,9 @@
 // TORVUS — Activate Subscription Edge Function
 // supabase/functions/activate-subscription/index.ts
 //
-// Accepts a promo/test code and activates premium for the user.
-// The valid code is stored as SUPABASE secret DEV_PROMO_CODE.
-//
 // Security:
-//   - Verifies Supabase JWT on every request
+//   - Supabase gateway verifies JWT before function runs
+//   - User ID extracted from verified JWT payload
 //   - Code is never logged or echoed back
 //   - Comparison is case-insensitive
 //   - Only the service role can write to profiles
@@ -19,25 +17,36 @@ const CORS = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+function jwtUserId(authHeader: string | null): string | null {
+  try {
+    if (!authHeader?.startsWith('Bearer ')) return null;
+    const token = authHeader.slice(7);
+    const [, b64] = token.split('.');
+    const padded = b64.replace(/-/g, '+').replace(/_/g, '/') + '==';
+    const payload = JSON.parse(atob(padded));
+    if (typeof payload?.sub !== 'string') return null;
+    if (payload.exp && payload.exp < Date.now() / 1000) return null;
+    return payload.sub as string;
+  } catch {
+    return null;
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
 
   try {
     // ── 1. Verify JWT ──────────────────────────────────────
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader?.startsWith('Bearer ')) return err(401, 'unauthorized');
+    const userId = jwtUserId(req.headers.get('Authorization'));
+    if (!userId) return err(401, 'unauthorized');
 
-    const token = authHeader.slice(7);
-
+    // ── 2. Supabase service client ─────────────────────────
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
-    if (authErr || !user) return err(401, 'unauthorized');
-
-    // ── 2. Parse body ──────────────────────────────────────
+    // ── 3. Parse body ──────────────────────────────────────
     let body: Record<string, unknown>;
     try { body = await req.json(); }
     catch { return err(400, 'invalid_json'); }
@@ -46,23 +55,22 @@ Deno.serve(async (req: Request) => {
     if (typeof code !== 'string' || code.trim().length === 0)
       return err(400, 'missing_code');
 
-    // ── 3. Validate promo code ─────────────────────────────
+    // ── 4. Validate promo code ─────────────────────────────
     const devCode = Deno.env.get('DEV_PROMO_CODE');
     if (!devCode) return err(500, 'server_misconfigured');
 
     const submitted = code.trim().toUpperCase();
     const expected  = devCode.trim().toUpperCase();
 
-    // Reject if lengths differ (avoids timing side-channel)
     if (submitted.length !== expected.length || submitted !== expected)
       return err(400, 'invalid_code');
 
-    // ── 4. Activate premium ────────────────────────────────
+    // ── 5. Activate premium ────────────────────────────────
     const { error: upsertErr } = await supabase
       .from('profiles')
       .upsert(
         {
-          id:            user.id,
+          id:            userId,
           is_premium:    true,
           premium_since: new Date().toISOString(),
           updated_at:    new Date().toISOString(),
