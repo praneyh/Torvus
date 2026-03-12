@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { getDatabase } from '../../schema';
+import { supabase } from '../../src/lib/supabase';
 
 // ─────────────────────────────────────────────────────────────
 // TYPES
@@ -36,10 +37,22 @@ export default function NutritionGoalsScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving]   = useState(false);
   const [saved, setSaved]         = useState(false);
+  const [isPremium, setIsPremium] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
+        // Check premium status for AI Targets button
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user?.id) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('is_premium')
+            .eq('id', session.user.id)
+            .single();
+          if (profile?.is_premium) setIsPremium(true);
+        }
+
         const db = await getDatabase();
         const row = await db.getFirstAsync<{
           target_calories: number; target_protein_g: number;
@@ -197,6 +210,25 @@ export default function NutritionGoalsScreen() {
               />
             </View>
 
+            {/* AI Targets */}
+            <TouchableOpacity
+              style={styles.aiTargetsBtn}
+              onPress={() => router.push('/nutrition/ai-targets')}
+            >
+              <Text style={styles.aiTargetsBtnIcon}>{isPremium ? '🤖' : '🔒'}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.aiTargetsBtnTitle}>AI-CALCULATED TARGETS</Text>
+                <Text style={styles.aiTargetsBtnSub}>
+                  {isPremium
+                    ? 'Calculate your TDEE and optimal macros with Claude'
+                    : 'Premium — personalised TDEE & macro targets'}
+                </Text>
+              </View>
+              <Text style={styles.aiTargetsBtnChevron}>›</Text>
+            </TouchableOpacity>
+
+            <View style={styles.divider} />
+
             {/* Save */}
             <TouchableOpacity
               style={[styles.saveBtn, isSaving && styles.saveBtnDisabled]}
@@ -328,4 +360,14 @@ const styles = StyleSheet.create({
   },
   saveBtnDisabled: { opacity: 0.5 },
   saveBtnText: { color: '#0E0D0B', fontWeight: '800', fontSize: 14, letterSpacing: 1 },
+
+  aiTargetsBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: '#141311', borderWidth: 1, borderColor: '#EF6C3E55',
+    borderRadius: 12, padding: 14, marginTop: 16,
+  },
+  aiTargetsBtnIcon: { fontSize: 22 },
+  aiTargetsBtnTitle: { fontSize: 10, fontWeight: '800', letterSpacing: 1.5, color: '#EF6C3E', marginBottom: 2 },
+  aiTargetsBtnSub:   { fontSize: 12, color: '#777' },
+  aiTargetsBtnChevron: { fontSize: 20, color: '#555' },
 });

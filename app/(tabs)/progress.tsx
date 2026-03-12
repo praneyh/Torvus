@@ -8,7 +8,7 @@ import {
   View, Text, StyleSheet, SafeAreaView, ScrollView,
   TouchableOpacity, Platform, ActivityIndicator, TextInput,
 } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, router } from 'expo-router';
 import { getDatabase } from '../../schema';
 
 // ─────────────────────────────────────────────────────────────
@@ -1699,6 +1699,20 @@ export default function ProgressScreen() {
         )}
       </View>
 
+      {/* AI Weekly Insights banner */}
+      <TouchableOpacity
+        style={styles.insightsBanner}
+        onPress={() => router.push('/progress/weekly-insights')}
+        activeOpacity={0.75}
+      >
+        <Text style={styles.insightsBannerIcon}>💡</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.insightsBannerTitle}>AI WEEKLY INSIGHTS</Text>
+          <Text style={styles.insightsBannerSub}>Get a personalised review of your week</Text>
+        </View>
+        <Text style={styles.insightsBannerChevron}>›</Text>
+      </TouchableOpacity>
+
       {/* WEIGHTS / CARDIO / BODY toggle */}
       <View style={[styles.segmentBar, { borderBottomWidth: 0 }]}>
         {(['weights', 'cardio', 'body'] as const).map(mode => (
@@ -1790,6 +1804,17 @@ const styles = StyleSheet.create({
     borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5,
   },
   sessionCountText: { fontSize: 11, fontWeight: '700', color: '#555', letterSpacing: 0.5 },
+
+  // ── AI Insights banner ───────────────────────────────────
+  insightsBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingHorizontal: 16, paddingVertical: 10,
+    backgroundColor: '#EF6C3E0D', borderBottomWidth: 1, borderBottomColor: '#EF6C3E22',
+  },
+  insightsBannerIcon:    { fontSize: 18 },
+  insightsBannerTitle:   { fontSize: 9, fontWeight: '800', letterSpacing: 1.5, color: '#EF6C3E' },
+  insightsBannerSub:     { fontSize: 11, color: '#555', marginTop: 1 },
+  insightsBannerChevron: { fontSize: 18, color: '#444' },
 
   // ── Segment control ──────────────────────────────────────
   segmentBar: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#1E1D1A' },

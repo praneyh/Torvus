@@ -123,26 +123,87 @@ The Anthropic API key is stored locally on-device (entered in the Profile tab �
 ### Supabase Setup
 
 1. Create a project at [supabase.com](https://supabase.com)
-2. Run this SQL to create the sync table:
+2. Run this SQL in the Supabase SQL editor:
 
 ```sql
+-- ── Cloud sync ────────────────────────────────────────────────
 create table user_data (
-  user_id uuid primary key references auth.users(id) on delete cascade,
-  blob     jsonb not null default '{}',
+  user_id    uuid primary key references auth.users(id) on delete cascade,
+  blob       jsonb not null default '{}',
   updated_at timestamptz not null default now()
 );
-
 alter table user_data enable row level security;
+create policy "Users can read their own data"   on user_data for select using (auth.uid() = user_id);
+create policy "Users can upsert their own data" on user_data for insert with check (auth.uid() = user_id);
+create policy "Users can update their own data" on user_data for update using (auth.uid() = user_id);
 
-create policy "Users can read their own data"
-  on user_data for select using (auth.uid() = user_id);
+-- ── Premium subscriptions ─────────────────────────────────────
+create table profiles (
+  id             uuid primary key references auth.users(id) on delete cascade,
+  is_premium     boolean not null default false,
+  premium_since  timestamptz,
+  updated_at     timestamptz not null default now()
+);
+alter table profiles enable row level security;
+-- Users can read their own profile; only service role (edge functions) can write
+create policy "Users can read their own profile" on profiles for select using (auth.uid() = id);
 
-create policy "Users can upsert their own data"
-  on user_data for insert with check (auth.uid() = user_id);
+-- Auto-create a profile row on signup
+create or replace function handle_new_user()
+returns trigger language plpgsql security definer as $$
+begin
+  insert into public.profiles (id) values (new.id) on conflict do nothing;
+  return new;
+end;
+$$;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute procedure handle_new_user();
 
-create policy "Users can update their own data"
-  on user_data for update using (auth.uid() = user_id);
+-- ── AI usage rate limiting (multi-feature) ─────────────────────
+create table ai_usage (
+  user_id       uuid references auth.users(id) on delete cascade,
+  date          date not null default current_date,
+  feature       text not null default 'food_scan',
+  request_count integer not null default 0,
+  primary key (user_id, date, feature)
+);
+alter table ai_usage enable row level security;
+-- Only the edge function (service role) reads and writes this table
 ```
+
+> **Migration** — if you already created `ai_usage` without the `feature` column, run this in the Supabase SQL editor:
+> ```sql
+> alter table ai_usage add column if not exists feature text not null default 'food_scan';
+> alter table ai_usage drop constraint ai_usage_pkey;
+> alter table ai_usage add primary key (user_id, date, feature);
+> ```
+
+3. Deploy edge functions and set secrets:
+```bash
+npx supabase login
+npx supabase link --project-ref rhdinurdqecvdobjsrzb
+
+# Set secrets
+npx supabase secrets set ANTHROPIC_API_KEY=your_anthropic_key_here
+npx supabase secrets set DEV_PROMO_CODE=your_test_code_here
+
+# Deploy all four edge functions
+npx supabase functions deploy ai-estimate
+npx supabase functions deploy activate-subscription
+npx supabase functions deploy ai-weekly-insights
+npx supabase functions deploy ai-nutrition-targets
+```
+
+### Premium Features
+
+| Feature | Rate Limit | Edge Function |
+|---------|-----------|---------------|
+| AI food scan | 25/day | `ai-estimate` |
+| Weekly insights | 1/day | `ai-weekly-insights` |
+| AI nutrition targets | 3/day | `ai-nutrition-targets` |
+
+**Testing premium:** Use the promo code flow — open any AI feature, tap "Have a promo or test code?", enter the value you set as `DEV_PROMO_CODE`. This activates your account's premium status server-side immediately.
 
 ## Design System
 

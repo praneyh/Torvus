@@ -64,8 +64,7 @@ export default function ProfileScreen() {
   const [heightFtInput, setHeightFtInput]     = useState('');
   const [heightInInput, setHeightInInput]     = useState('');
   const [heightUnit, setHeightUnit]           = useState<HeightUnit>('cm');
-  const [apiKeyInput, setApiKeyInput]         = useState('');
-  const [showApiKey, setShowApiKey]           = useState(false);
+  const [apiKeyInput, setApiKeyInput]         = useState(''); // kept for saveCore signature compat
   const [isLoading, setIsLoading]             = useState(true);
   const [savedAt, setSavedAt]                 = useState<number | null>(null);
   const [userEmail, setUserEmail]             = useState<string | null>(null);
@@ -450,41 +449,6 @@ export default function ProfileScreen() {
                   </View>
                 </View>
               ))}
-            </View>
-
-            {/* ── ANTHROPIC API KEY ── */}
-            <SectionLabel label="ANTHROPIC API KEY" />
-            <Text style={styles.sectionSub}>
-              Required for AI food photo analysis. Get your key at console.anthropic.com.
-              Stored locally on your device only.
-            </Text>
-            <View style={styles.card}>
-              <Text style={[styles.fieldLabel, { paddingHorizontal: 16, paddingTop: 14 }]}>API KEY</Text>
-              <View style={styles.apiKeyRow}>
-                <TextInput
-                  style={styles.apiKeyInput}
-                  value={apiKeyInput}
-                  onChangeText={setApiKeyInput}
-                  onBlur={save}
-                  placeholder="sk-ant-..."
-                  placeholderTextColor="#444"
-                  secureTextEntry={!showApiKey}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  selectTextOnFocus
-                />
-                <TouchableOpacity style={styles.apiKeyToggle} onPress={() => setShowApiKey(v => !v)}>
-                  <Text style={styles.apiKeyToggleText}>{showApiKey ? 'HIDE' : 'SHOW'}</Text>
-                </TouchableOpacity>
-              </View>
-              {apiKeyInput.length > 0 && (
-                <Text style={[
-                  styles.apiKeyStatus,
-                  apiKeyInput.startsWith('sk-ant-') ? styles.apiKeyStatusOk : styles.apiKeyStatusWarn,
-                ]}>
-                  {apiKeyInput.startsWith('sk-ant-') ? '✓ Looks valid' : '⚠ Should start with sk-ant-'}
-                </Text>
-              )}
             </View>
 
             {/* ── ACCOUNT ── */}

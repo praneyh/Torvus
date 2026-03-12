@@ -5,7 +5,7 @@
 // Params: date (YYYY-MM-DD), meal (breakfast|lunch|dinner|snacks)
 // ============================================================
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, ScrollView,
   TouchableOpacity, TextInput, Platform, ActivityIndicator,
@@ -14,6 +14,7 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { getDatabase } from '../../schema';
+import { supabase, SUPABASE_URL } from '../../src/lib/supabase';
 
 // ─────────────────────────────────────────────────────────────
 // TYPES
@@ -46,106 +47,88 @@ const MEAL_LABELS: Record<MealType, string> = {
 // HELPERS
 // ─────────────────────────────────────────────────────────────
 
-function buildBiasInstructions(bias: AIBias): string {
-  const lines: string[] = [];
-  const map: [keyof AIBias, string][] = [
-    ['calories', 'calories'], ['protein', 'protein'],
-    ['carbs', 'carbohydrates'], ['fat', 'fat'],
-    ['fiber', 'fiber'], ['sodium', 'sodium'],
-  ];
-  for (const [key, label] of map) {
-    if (bias[key] === 'overestimate') {
-      lines.push(`• For ${label}: lean toward the HIGHER end of your estimate.`);
-    } else if (bias[key] === 'underestimate') {
-      lines.push(`• For ${label}: lean toward the LOWER end of your estimate.`);
-    }
-  }
-  return lines.length > 0
-    ? `\n\nEstimation bias (follow these instructions carefully):\n${lines.join('\n')}`
-    : '';
-}
-
-function buildPrompt(bias: AIBias): string {
-  return `You are a precise nutrition expert. Analyze the food in this photo and estimate its nutritional content for the portion shown.
-
-If there is a size reference object in the image (like a hand, coin, or bottle), use it to estimate portion size more accurately.${buildBiasInstructions(bias)}
-
-Respond ONLY with a valid JSON object — no markdown, no explanation, no extra text:
-{
-  "name": "descriptive food name",
-  "serving_description": "e.g. 1 large bowl, approximately 400g",
-  "calories": 450,
-  "protein_g": 35,
-  "carbs_g": 40,
-  "fat_g": 15,
-  "fiber_g": 5,
-  "sodium_mg": 800
-}`;
-}
-
-async function callClaudeVision(
+async function callEdgeFunction(
   base64: string,
   mediaType: string,
-  apiKey: string,
   bias: AIBias,
+  notes?: string,
 ): Promise<EstimateResult> {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw { code: 'unauthorized' };
+
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/ai-estimate`, {
     method: 'POST',
     headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
+      'Authorization':  `Bearer ${session.access_token}`,
+      'Content-Type':   'application/json',
     },
-    body: JSON.stringify({
-      model: 'claude-opus-4-6',
-      max_tokens: 512,
-      messages: [{
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: mediaType, data: base64 },
-          },
-          { type: 'text', text: buildPrompt(bias) },
-        ],
-      }],
-    }),
+    body: JSON.stringify({ base64, mediaType, bias, notes }),
   });
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error((err as any)?.error?.message ?? `API error ${response.status}`);
-  }
-
-  const data = await response.json();
-  const text: string = data?.content?.[0]?.text ?? '';
-
-  // Strip any accidental markdown fences
-  const cleaned = text.replace(/```(?:json)?/g, '').replace(/```/g, '').trim();
-  const parsed = JSON.parse(cleaned) as EstimateResult;
-
-  // Validate required fields
-  if (typeof parsed.calories !== 'number') throw new Error('Unexpected response format');
-  return parsed;
+  const body = await res.json();
+  if (!res.ok) throw { code: body?.error ?? 'unknown', status: res.status };
+  if (typeof body.calories !== 'number') throw { code: 'ai_parse_error' };
+  return body as EstimateResult;
 }
 
 // ─────────────────────────────────────────────────────────────
 // SCREEN
 // ─────────────────────────────────────────────────────────────
 
-type Step = 'pick' | 'preview' | 'analyzing' | 'result';
+type Step = 'loading' | 'paywall' | 'pick' | 'preview' | 'analyzing' | 'result';
 
 export default function AIEstimateScreen() {
   const params   = useLocalSearchParams<{ date: string; meal: string }>();
   const date     = params.date ?? new Date().toISOString().slice(0, 10);
   const mealType = (params.meal ?? 'breakfast') as MealType;
 
-  const [step, setStep]         = useState<Step>('pick');
+  const [step, setStep]         = useState<Step>('loading');
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [base64, setBase64]     = useState<string | null>(null);
   const [mediaType, setMediaType] = useState('image/jpeg');
+  const [notes, setNotes]       = useState('');
   const [result, setResult]     = useState<EstimateResult | null>(null);
   const [isLogging, setIsLogging] = useState(false);
+  const [scansUsed, setScansUsed] = useState<number | null>(null);
+
+  // Promo code redemption
+  const [promoCode, setPromoCode]       = useState('');
+  const [isRedeeming, setIsRedeeming]   = useState(false);
+  const [redeemError, setRedeemError]   = useState('');
+  const [showPromoInput, setShowPromoInput] = useState(false);
+
+  // ── Premium check ────────────────────────────────────────
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.user?.id) { setStep('paywall'); return; }
+
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('is_premium')
+          .eq('id', session.user.id)
+          .single();
+
+        if (!profile?.is_premium) { setStep('paywall'); return; }
+
+        // Load today's usage count for display
+        const today = new Date().toISOString().slice(0, 10);
+        const { data: usage } = await supabase
+          .from('ai_usage')
+          .select('request_count')
+          .eq('user_id', session.user.id)
+          .eq('date', today)
+          .eq('feature', 'food_scan')
+          .single();
+        setScansUsed(usage?.request_count ?? 0);
+
+        setStep('pick');
+      } catch {
+        setStep('pick'); // fail open — edge function is the real gate
+      }
+    })();
+  }, []);
 
   // Editable result fields
   const [editName, setEditName]       = useState('');
@@ -203,28 +186,18 @@ export default function AIEstimateScreen() {
     setStep('analyzing');
     try {
       const db = await getDatabase();
-      const prefs = await db.getFirstAsync<{
-        anthropic_api_key: string | null;
-        ai_estimation_bias: string;
-      }>(`SELECT anthropic_api_key, ai_estimation_bias FROM user_preferences WHERE id = 1`);
-
-      const apiKey = prefs?.anthropic_api_key?.trim() ?? '';
-      if (!apiKey) {
-        Alert.alert(
-          'API Key Required',
-          'Add your Anthropic API key in the Profile tab to use AI food scanning.',
-        );
-        setStep('preview');
-        return;
-      }
-
       let bias: AIBias = {
         calories: 'neutral', protein: 'neutral', carbs: 'neutral',
         fat: 'neutral', fiber: 'neutral', sodium: 'neutral',
       };
-      try { bias = JSON.parse(prefs?.ai_estimation_bias ?? '{}'); } catch {}
+      try {
+        const prefs = await db.getFirstAsync<{ ai_estimation_bias: string }>(
+          `SELECT ai_estimation_bias FROM user_preferences WHERE id = 1`
+        );
+        bias = JSON.parse(prefs?.ai_estimation_bias ?? '{}');
+      } catch {}
 
-      const estimate = await callClaudeVision(base64, mediaType, apiKey, bias);
+      const estimate = await callEdgeFunction(base64, mediaType, bias, notes);
 
       setResult(estimate);
       setEditName(estimate.name);
@@ -235,10 +208,67 @@ export default function AIEstimateScreen() {
       setEditFiber(String(Math.round(estimate.fiber_g)));
       setEditSodium(String(Math.round(estimate.sodium_mg)));
       setEditDesc(estimate.serving_description);
+      setScansUsed(n => (n ?? 0) + 1);
       setStep('result');
     } catch (e: any) {
-      Alert.alert('Analysis failed', e?.message ?? 'Please try again.');
-      setStep('preview');
+      const code = e?.code ?? '';
+      if (code === 'subscription_required') {
+        setStep('paywall');
+      } else if (code === 'daily_limit_reached') {
+        Alert.alert('Daily limit reached', 'You\'ve used all 25 AI scans for today. Resets at midnight.');
+        setStep('preview');
+      } else {
+        Alert.alert('Analysis failed', 'Please check your connection and try again.');
+        setStep('preview');
+      }
+    }
+  }
+
+  // ── Redeem promo code ────────────────────────────────────
+
+  async function redeemCode() {
+    if (!promoCode.trim()) return;
+    setIsRedeeming(true);
+    setRedeemError('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) { setRedeemError('Please sign in first.'); return; }
+
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/activate-subscription`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type':  'application/json',
+        },
+        body: JSON.stringify({ code: promoCode.trim() }),
+      });
+
+      const body = await res.json();
+      if (!res.ok) {
+        const msg = body?.error === 'invalid_code' ? 'Invalid code. Please try again.' : 'Something went wrong. Try again.';
+        setRedeemError(msg);
+        return;
+      }
+
+      // Success — re-run premium check
+      setPromoCode('');
+      setShowPromoInput(false);
+      setStep('loading');
+      // Re-trigger the premium check useEffect
+      const today = new Date().toISOString().slice(0, 10);
+      const { data: usage } = await supabase
+        .from('ai_usage')
+        .select('request_count')
+        .eq('user_id', session.user.id)
+        .eq('date', today)
+        .eq('feature', 'food_scan')
+        .single();
+      setScansUsed(usage?.request_count ?? 0);
+      setStep('pick');
+    } catch {
+      setRedeemError('Network error. Please check your connection.');
+    } finally {
+      setIsRedeeming(false);
     }
   }
 
@@ -299,6 +329,96 @@ export default function AIEstimateScreen() {
           <View style={{ width: 40 }} />
         </View>
 
+        {/* ── STEP: LOADING ── */}
+        {step === 'loading' && (
+          <View style={styles.pickWrap}>
+            <ActivityIndicator color="#EF6C3E" size="large" />
+          </View>
+        )}
+
+        {/* ── STEP: PAYWALL ── */}
+        {step === 'paywall' && (
+          <ScrollView contentContainerStyle={styles.paywallWrap} showsVerticalScrollIndicator={false}>
+            <View style={styles.paywallBadge}>
+              <Text style={styles.paywallBadgeText}>PREMIUM</Text>
+            </View>
+            <Text style={styles.paywallTitle}>Torvus Premium</Text>
+            <Text style={styles.paywallSub}>
+              Unlock AI-powered tools to optimise your nutrition and track your progress smarter.
+            </Text>
+
+            <View style={styles.paywallFeatures}>
+              {[
+                { icon: '📸', text: '25 AI food scans per day' },
+                { icon: '🎯', text: 'Per-nutrient estimation bias' },
+                { icon: '🎯', text: 'AI-calculated TDEE & macro targets' },
+                { icon: '💡', text: 'Weekly AI progress insights' },
+                { icon: '🤖', text: 'Powered by Claude Sonnet' },
+                { icon: '📝', text: 'Add context notes to improve accuracy' },
+              ].map((f, i) => (
+                <View key={i} style={styles.paywallFeatureRow}>
+                  <Text style={styles.paywallFeatureIcon}>{f.icon}</Text>
+                  <Text style={styles.paywallFeatureText}>{f.text}</Text>
+                </View>
+              ))}
+            </View>
+
+            <View style={styles.paywallPriceCard}>
+              <Text style={styles.paywallPriceLabel}>TORVUS PREMIUM</Text>
+              <Text style={styles.paywallPrice}>$4.99<Text style={styles.paywallPricePer}> / month</Text></Text>
+              <Text style={styles.paywallPriceAlt}>or $39.99 / year — save 33%</Text>
+            </View>
+
+            <TouchableOpacity
+              style={styles.paywallCta}
+              onPress={() => Alert.alert('Coming Soon', 'In-app purchase subscriptions will be available in the next update.')}
+            >
+              <Text style={styles.paywallCtaText}>GET PREMIUM</Text>
+            </TouchableOpacity>
+
+            {/* Promo / test code */}
+            <TouchableOpacity
+              style={styles.paywallPromoToggle}
+              onPress={() => { setShowPromoInput(v => !v); setRedeemError(''); }}
+            >
+              <Text style={styles.paywallPromoToggleText}>
+                {showPromoInput ? 'Hide' : 'Have a promo or test code?'}
+              </Text>
+            </TouchableOpacity>
+
+            {showPromoInput && (
+              <View style={styles.paywallPromoWrap}>
+                <TextInput
+                  style={styles.paywallPromoInput}
+                  value={promoCode}
+                  onChangeText={t => { setPromoCode(t); setRedeemError(''); }}
+                  placeholder="Enter code"
+                  placeholderTextColor="#3A3835"
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                />
+                <TouchableOpacity
+                  style={[styles.paywallPromoBtn, isRedeeming && { opacity: 0.5 }]}
+                  onPress={redeemCode}
+                  disabled={isRedeeming || !promoCode.trim()}
+                >
+                  {isRedeeming
+                    ? <ActivityIndicator color="#0E0D0B" size="small" />
+                    : <Text style={styles.paywallPromoBtnText}>REDEEM</Text>
+                  }
+                </TouchableOpacity>
+                {redeemError ? (
+                  <Text style={styles.paywallPromoError}>{redeemError}</Text>
+                ) : null}
+              </View>
+            )}
+
+            <TouchableOpacity style={styles.paywallRestore} onPress={() => router.back()}>
+              <Text style={styles.paywallRestoreText}>Go back</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        )}
+
         {/* ── STEP: PICK ── */}
         {step === 'pick' && (
           <View style={styles.pickWrap}>
@@ -318,9 +438,11 @@ export default function AIEstimateScreen() {
               <Text style={styles.pickBtnLabel}>Choose from Library</Text>
             </TouchableOpacity>
 
-            <Text style={styles.pickNote}>
-              Your Anthropic API key must be set in Profile settings.
-            </Text>
+            {scansUsed !== null && (
+              <Text style={styles.pickNote}>
+                {25 - scansUsed} of 25 AI scans remaining today
+              </Text>
+            )}
           </View>
         )}
 
@@ -336,6 +458,19 @@ export default function AIEstimateScreen() {
             <Text style={styles.previewHint}>
               Tap Analyze to send this photo to Claude for nutrition estimation.
             </Text>
+
+            <View style={styles.notesWrap}>
+              <Text style={styles.notesLabel}>NOTES (optional)</Text>
+              <TextInput
+                style={styles.notesInput}
+                value={notes}
+                onChangeText={setNotes}
+                placeholder="e.g. large portion, homemade, extra sauce..."
+                placeholderTextColor="#3A3835"
+                multiline
+                maxLength={300}
+              />
+            </View>
 
             <TouchableOpacity style={styles.analyzeBtn} onPress={analyze}>
               <Text style={styles.analyzeBtnText}>ANALYZE WITH AI</Text>
@@ -498,6 +633,14 @@ const styles = StyleSheet.create({
   changePhotoBtn: { margin: 16, alignSelf: 'flex-start' },
   changePhotoBtnText: { fontSize: 11, color: '#555', fontWeight: '700', letterSpacing: 1 },
   previewHint: { fontSize: 13, color: '#555', paddingHorizontal: 20, marginBottom: 24, lineHeight: 18 },
+  notesWrap: { marginHorizontal: 20, marginBottom: 20 },
+  notesLabel: { fontSize: 9, fontWeight: '700', letterSpacing: 1.5, color: '#555', marginBottom: 6 },
+  notesInput: {
+    backgroundColor: '#141311', borderWidth: 1, borderColor: '#252320',
+    borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10,
+    fontSize: 13, color: '#F2F0EB', minHeight: 64, textAlignVertical: 'top',
+  },
+
   analyzeBtn: {
     backgroundColor: '#EF6C3E', marginHorizontal: 20, borderRadius: 12,
     paddingVertical: 16, alignItems: 'center',
@@ -542,4 +685,52 @@ const styles = StyleSheet.create({
     paddingVertical: 14, alignItems: 'center', marginTop: 10,
   },
   retryBtnText: { fontSize: 12, fontWeight: '700', letterSpacing: 1, color: '#555' },
+
+  // ── Paywall ──
+  paywallWrap: { paddingHorizontal: 24, paddingTop: 32, paddingBottom: 48, alignItems: 'center' },
+  paywallBadge: {
+    backgroundColor: '#EF6C3E18', borderWidth: 1, borderColor: '#EF6C3E55',
+    borderRadius: 20, paddingHorizontal: 14, paddingVertical: 4, marginBottom: 16,
+  },
+  paywallBadgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 2, color: '#EF6C3E' },
+  paywallTitle: { fontSize: 26, fontWeight: '900', color: '#F2F0EB', marginBottom: 10, textAlign: 'center' },
+  paywallSub: { fontSize: 13, color: '#777', lineHeight: 19, textAlign: 'center', marginBottom: 28 },
+  paywallFeatures: {
+    width: '100%', backgroundColor: '#141311', borderWidth: 1,
+    borderColor: '#252320', borderRadius: 14, padding: 16, marginBottom: 20, gap: 12,
+  },
+  paywallFeatureRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  paywallFeatureIcon: { fontSize: 18, width: 26, textAlign: 'center' },
+  paywallFeatureText: { fontSize: 13, color: '#C0BEB9', fontWeight: '500' },
+  paywallPriceCard: {
+    width: '100%', backgroundColor: '#141311', borderWidth: 1, borderColor: '#EF6C3E55',
+    borderRadius: 14, padding: 20, marginBottom: 20, alignItems: 'center',
+  },
+  paywallPriceLabel: { fontSize: 9, fontWeight: '700', letterSpacing: 2, color: '#EF6C3E', marginBottom: 6 },
+  paywallPrice: { fontSize: 36, fontWeight: '900', color: '#F2F0EB' },
+  paywallPricePer: { fontSize: 16, fontWeight: '500', color: '#555' },
+  paywallPriceAlt: { fontSize: 12, color: '#555', marginTop: 4 },
+  paywallCta: {
+    width: '100%', backgroundColor: '#EF6C3E', borderRadius: 14,
+    paddingVertical: 18, alignItems: 'center', marginBottom: 12,
+  },
+  paywallCtaText: { fontSize: 14, fontWeight: '900', letterSpacing: 1.5, color: '#0E0D0B' },
+  paywallRestore: { paddingVertical: 8 },
+  paywallRestoreText: { fontSize: 12, color: '#555' },
+
+  paywallPromoToggle: { paddingVertical: 10 },
+  paywallPromoToggleText: { fontSize: 12, color: '#555', textDecorationLine: 'underline' },
+  paywallPromoWrap: { width: '100%', marginBottom: 4 },
+  paywallPromoInput: {
+    width: '100%', backgroundColor: '#141311', borderWidth: 1, borderColor: '#252320',
+    borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12,
+    fontSize: 15, fontWeight: '700', color: '#F2F0EB', letterSpacing: 2,
+    marginBottom: 8, textAlign: 'center',
+  },
+  paywallPromoBtn: {
+    width: '100%', backgroundColor: '#EF6C3E', borderRadius: 10,
+    paddingVertical: 14, alignItems: 'center',
+  },
+  paywallPromoBtnText: { fontSize: 13, fontWeight: '900', letterSpacing: 1.5, color: '#0E0D0B' },
+  paywallPromoError: { fontSize: 12, color: '#EF3E7A', textAlign: 'center', marginTop: 8 },
 });
