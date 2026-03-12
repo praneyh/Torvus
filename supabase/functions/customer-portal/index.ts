@@ -22,8 +22,9 @@ function jwtUserId(authHeader: string | null): string | null {
   try {
     if (!authHeader?.startsWith('Bearer ')) return null;
     const token = authHeader.slice(7);
-    const [, b64] = token.split('.');
-    const padded = b64.replace(/-/g, '+').replace(/_/g, '/') + '==';
+    const [, b64url] = token.split('.');
+    const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - b64.length % 4) % 4);
     const payload = JSON.parse(atob(padded));
     if (typeof payload?.sub !== 'string') return null;
     if (payload.exp && payload.exp < Date.now() / 1000) return null;
