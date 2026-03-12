@@ -13,6 +13,8 @@ Deno.serve((req: Request) => {
   const isSuccess = status === 'success';
   const isCancel  = status === 'cancel';
 
+  const deepLink = `torvus://subscription/${status}`;
+
   const title   = isSuccess ? 'Subscription Activated!'
     : isCancel  ? 'Checkout Cancelled'
     : 'Manage Subscription';
@@ -31,7 +33,9 @@ Deno.serve((req: Request) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="0;url=${deepLink}">
   <title>Torvus — ${title}</title>
+  <script>window.location.replace('${deepLink}');</script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -73,7 +77,7 @@ Deno.serve((req: Request) => {
     <div class="eyebrow">TORVUS</div>
     <h1>${title}</h1>
     <p>${message}</p>
-    <a href="torvus://" class="btn">RETURN TO APP</a>
+    <a href="${deepLink}" class="btn">RETURN TO APP</a>
     <p class="note">If the button doesn't work, close this page and reopen Torvus.</p>
   </div>
 </body>

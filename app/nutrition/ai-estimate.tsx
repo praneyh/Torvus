@@ -306,7 +306,9 @@ export default function AIEstimateScreen() {
         Alert.alert('Error', `Could not start checkout. Code: ${body?.error ?? res.status}${body?.detail ? `\n${body.detail}` : ''}`);
         return;
       }
-      await WebBrowser.openBrowserAsync(body.url);
+      await WebBrowser.openAuthSessionAsync(body.url, 'torvus://');
+      // Browser dismissed — check if subscription is now active
+      await refreshPremiumStatus();
     } catch {
       Alert.alert('Network error', 'Please check your connection and try again.');
     } finally {
@@ -314,30 +316,37 @@ export default function AIEstimateScreen() {
     }
   }
 
-  async function refreshPremiumStatus() {
+  async function refreshPremiumStatus(retries = 5, delayMs = 2000) {
     setIsRefreshing(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.user?.id) return;
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('is_premium')
-        .eq('id', session.user.id)
-        .single();
-      if (profile?.is_premium) {
-        const today = new Date().toISOString().slice(0, 10);
-        const { data: usage } = await supabase
-          .from('ai_usage')
-          .select('request_count')
-          .eq('user_id', session.user.id)
-          .eq('date', today)
-          .eq('feature', 'food_scan')
+
+      for (let attempt = 0; attempt < retries; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, delayMs));
+
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('is_premium')
+          .eq('id', session.user.id)
           .single();
-        setScansUsed(usage?.request_count ?? 0);
-        setStep('pick');
-      } else {
-        Alert.alert('Not active yet', 'Your subscription is not active yet. If you just paid, please wait a moment and try again.');
+
+        if (profile?.is_premium) {
+          const today = new Date().toISOString().slice(0, 10);
+          const { data: usage } = await supabase
+            .from('ai_usage')
+            .select('request_count')
+            .eq('user_id', session.user.id)
+            .eq('date', today)
+            .eq('feature', 'food_scan')
+            .single();
+          setScansUsed(usage?.request_count ?? 0);
+          setStep('pick');
+          return;
+        }
       }
+
+      Alert.alert('Not active yet', 'Your subscription is not active yet. If you just paid, please wait a moment and try again.');
     } catch {
       Alert.alert('Error', 'Could not check subscription status.');
     } finally {
